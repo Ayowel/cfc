@@ -3,8 +3,8 @@ use anyhow::Error;
 use bollard::Docker;
 use croner::Cron;
 use regex::Regex;
-use tokio::task::JoinSet;
-use tracing::{debug, warn};
+use tokio::{task::JoinSet, time};
+use tracing::{debug, error, info, warn};
 use std::{collections::HashMap, fmt::Debug, time::Duration};
 
 mod common;
@@ -133,11 +133,16 @@ impl TryFrom<HashMap<String, Vec<String>>> for JobInfo {
         let job_info: JobInfo;
         match kind.as_str() {
             ExecJobInfo::LABEL => {
+                let container;
+                match parameters.remove("container").map(|mut c| c.pop().unwrap()) {
+                    Some(c) => container = c,
+                    None => return Err(Error::msg("Missing 'container' attribute")),
+                };
                 let job = ExecJobInfo {
                     name: parameters.remove("name").map_or_else(|| "".to_string(), |mut n| n.pop().unwrap()),
                     schedule: schedule_to_cron(&schedule.as_str()).unwrap(),
                     command: command.unwrap().pop().unwrap(),
-                    container: parameters.remove("container").map(|mut c| c.pop().unwrap()).unwrap(),
+                    container,
                     user: parameters.remove("user").map(|mut u| u.pop().unwrap()),
                     tty: parameters.remove("tty").map_or(false, |mut t| t.pop().unwrap().parse().unwrap()),
                     environment: parameters.remove("environment").unwrap_or(Default::default()),
@@ -201,7 +206,7 @@ impl TryFrom<HashMap<String, Vec<String>>> for JobInfo {
 impl JobInfo {
     /// Start scheduling the execution of the job.
     /// This future should never return unless a fatal configuration error occured
-    pub async fn start(self, _handle: Docker) -> Result<Option<bool>, Error> {
+    pub async fn start(self, handle: Docker) -> Result<Option<bool>, Error> {
         let mut set = JoinSet::new();
 
         let cron;
@@ -210,19 +215,40 @@ impl JobInfo {
         let initial_cron = cron.clone();
         set.spawn(async move {cron_sleep(&initial_cron).await});
         while let Some(res) = set.join_next().await {
-            if let Ok(Ok(Some(_))) = res {
-                if may_run_parallel || set.is_empty() {
-                    match_all_jobs!(&self, e, {
-                        let exec_job = e.as_ref().clone();
-                        set.spawn(async {exec_job.exec().await});
-                    });
+            match res {
+                Ok(Ok(Some(_))) => {
+                    // Return from timer
+                    if may_run_parallel || set.is_empty() {
+                        let handle_copy = handle.clone();
+                        match_all_jobs!(&self, e, {
+                            let exec_job = e.as_ref().clone();
+                            set.spawn(async move {
+                                let start_time = time::Instant::now();
+                                let name = exec_job.name.clone();
+                                let e = exec_job.exec(&handle_copy).await;
+                                let duration = time::Instant::now() - start_time;
+                                info!("Job {} ended in {}.{:04} seconds", name, duration.as_secs(), duration.as_millis()%1000);
+                                e
+                            });
+                        });
+                    }
+                    let cron = cron.clone();
+                    set.spawn(async move {cron_sleep(&cron).await});
+                },
+                Ok(Ok(None)) => {
+                    info!("Job ended successfully: {}", self.name());
+                },
+                Ok(Err(e)) => {
+                    error!("An error occured while running job {}: {}", self.name(), e);
+                    // break;
+                },
+                Err(e) => {
+                    error!("A join error occured while running job {}: {}", self.name(), e);
+                    return Err(Error::new(e));
                 }
-                let cron = cron.clone();
-                set.spawn(async move {cron_sleep(&cron).await});
             }
         }
-        warn!["A job terminated, this is probably not desired: {:?}", self];
-        Err(Error::msg("Aborting because a job unexpectedly stopped"))
+        Err(Error::msg(format!("The job {} unexpectedly exhausted all its runners", self.name())))
     }
 
     /// Get the name of the job

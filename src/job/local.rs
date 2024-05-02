@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 
 use anyhow::Error;
+use bollard::Docker;
 use croner::Cron;
 use tracing::{event, Level};
 
@@ -15,7 +16,7 @@ pub struct LocalJobInfo {
 
 impl LocalJobInfo {
     pub const LABEL: &'static str = "job-local";
-    pub async fn exec(self) -> Result<Option<bool>, Error> {
+    pub async fn exec(self, _: &Docker) -> Result<Option<bool>, Error> {
         let mut command = tokio::process::Command::new(self.command);
         for e in self.environment {
             let mut env_info = e.split("=");

@@ -1,6 +1,7 @@
 use std::fmt::{Debug, Display, Formatter};
 
 use anyhow::Error;
+use bollard::Docker;
 use croner::Cron;
 
 use crate::job::common::UNKNOWN_CONTAINER_LABEL;
@@ -23,7 +24,7 @@ pub struct RunJobInfo {
 
 impl RunJobInfo {
     pub const LABEL: &'static str = "job-run";
-    pub async fn exec(self) -> Result<Option<bool>, Error> {
+    pub async fn exec(self, _handle: &Docker) -> Result<Option<bool>, Error> {
         Err(Error::msg("message")) // TODO
     }
     pub fn get_schedule(&self) -> Cron {

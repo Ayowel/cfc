@@ -1,7 +1,10 @@
 use std::fmt::{Debug, Display, Formatter};
 
 use anyhow::Error;
+use bollard::{exec::{CreateExecOptions, StartExecOptions, StartExecResults}, Docker};
 use croner::Cron;
+use futures_util::TryStreamExt;
+use tracing::debug;
 
 /// Execute an arbitrary command on a container.
 /// This is normally instanciated as the value of the enum obtained by calling
@@ -49,8 +52,53 @@ pub struct ExecJobInfo {
 
 impl ExecJobInfo {
     pub const LABEL: &'static str = "job-exec";
-    pub async fn exec(self) -> Result<Option<bool>, Error> {
-        Err(Error::msg("message")) // TODO
+    pub async fn exec(self, handle: &Docker) -> Result<Option<bool>, Error> {
+        debug!("Executing job '{}' on container {} ({})", self.name, self.container, self.command);
+        let opts = CreateExecOptions {
+            tty: Some(self.tty),
+            attach_stdin: Some(true),
+            attach_stderr: Some(true),
+            env: Some(self.environment),
+            cmd: Some(vec![self.command]),
+            user: self.user,
+            ..Default::default()
+        };
+        let create_result;
+        match handle.create_exec(&self.container, opts).await {
+            Ok(c) => create_result = c,
+            Err(e) => return Err(e.into())
+        }
+        let opts = StartExecOptions {
+            detach: false,
+            tty: self.tty,
+            output_capacity: None,
+        };
+        let ostream;
+        match handle.start_exec(&create_result.id, Some(opts)).await {
+            Ok(r) => match r {
+                StartExecResults::Attached { output, input: _ } => {
+                    ostream = output;
+                },
+                StartExecResults::Detached => panic!("Spawned a detached exec process, this should never happen."),
+            },
+            Err(e) => { return Err(e.into()); },
+        };
+        let l: Vec<_> = ostream.try_collect().await.map_err(|e| Error::new(e))?;
+        let mut stdout = String::new();
+        let mut stderr = String::new();
+        for stream in l {
+            match stream {
+                bollard::container::LogOutput::StdErr { message } => stderr += &String::from_utf8(message.into()).map_err(|e| Error::new(e))?,
+                bollard::container::LogOutput::StdOut { message } => stdout += &String::from_utf8(message.into()).map_err(|e| Error::new(e))?,
+                bollard::container::LogOutput::StdIn { message: _ } => {},
+                bollard::container::LogOutput::Console { message } => stdout += &String::from_utf8(message.into()).map_err(|e| Error::new(e))?,
+            }
+        }
+        match handle.inspect_exec(&create_result.id).await {
+            Ok(i) => debug!("Exec finished with result {:?}, stdin [{}], stdout [{}]", i, stdout, stderr),
+            Err(e) => return Err(e.into()),
+        }
+        Ok(None)
     }
     pub fn get_schedule(&self) -> Cron {
         self.schedule.clone()

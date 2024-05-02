@@ -9,12 +9,11 @@ use crate::job::LocalJobInfo;
 
 pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, allow_unsafe_jobs: bool) -> Result<HashMap<String, HashMap<String, Vec<String>>>> {
     let mut container_idx: HashSet<String> = HashSet::new();
-    let mut job_map = HashMap::new();
+    let mut job_map: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for prefix in label_prefixes {
         let label_filter = format!("{prefix}.enabled=true");
         event![Level::DEBUG, "Looking for containers with label {label_filter}"];
         let options = ListContainersOptions::<String> {
-            all: true, // Do we really want to index 'all' ?
             filters: HashMap::from([("label".into(), vec![label_filter])]),
             ..Default::default()
         };
@@ -28,12 +27,12 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
         }
         event!(Level::DEBUG, "Found {} candidate containers", container_list.len());
         for container in container_list {
-            let container_id = container.id.as_ref();
-            if container_idx.contains(container_id.unwrap()) {
-                event![Level::DEBUG, "Skipping {} as it was already encountered", container_id.unwrap()];
+            let container_id = container.id.as_ref().unwrap();
+            if container_idx.contains(container_id) {
+                event![Level::DEBUG, "Skipping {} as it was already encountered", container_id];
                 continue;
             }
-            container_idx.insert(container_id.unwrap().to_string());
+            container_idx.insert(container_id.to_string());
             event!(Level::DEBUG, "On container {:?}", container);
             if !container.labels.as_ref().is_some_and(|c| !c.is_empty()) {
                 continue;
@@ -64,12 +63,16 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
                     }
                 }
                 // Start including the key
-                let job_key = format!["{}_{}_{}", container_id.unwrap(), job_kind, job_name];
+                let job_key = format!["{}_{}_{}", container_id, job_kind, job_name];
                 if !job_map.contains_key(&job_key) {
-                    job_map.insert(job_key.clone(), HashMap::from([
+                    let mut initial_map = vec![
                         ("kind".to_string(), vec![job_kind.clone()]),
                         ("name".to_string(), vec![job_name.clone()]),
-                    ]));
+                    ];
+                    if job_kind != LocalJobInfo::LABEL {
+                        initial_map.push(("container".to_string(), vec![container_id.clone()]));
+                    }
+                    job_map.insert(job_key.clone(), HashMap::from_iter(initial_map));
                 }
                 let evt_info = job_map.get_mut(&job_key).unwrap();
                 if !evt_info.get("kind").unwrap().contains(&job_kind) {
@@ -77,12 +80,17 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
                     return Err(Error::msg("Conflicting cron types on label"));
                 }
                 // FIXME: this is only required due to the fact that we allow the use of multiple prefix keys
-                if let Some(param_value) = evt_info.get(&job_parameter) {
-                    event![Level::WARN, "Parameter is set more than once with different label prefixes (found on {})", key];
-                    if !param_value.contains(value) {
-                        return Err(Error::msg("Parameter set mote than once has different values in its occurences"));
+                let param_value = evt_info.get(&job_parameter);
+                if param_value.is_some() {
+                    if job_parameter == "container" && evt_info.get("container").map_or(true, |v| v.len() == 1 && v.contains(value)) {
+                        evt_info.remove("container");
+                    } else {
+                        event![Level::WARN, "Parameter is set more than once with different label prefixes (found on {})", key];
+                        if !param_value.unwrap().contains(value) {
+                            return Err(Error::msg("Parameter set more than once has different values in its occurences"));
+                        }
+                        continue;
                     }
-                    continue;
                 }
                 match job_parameter.as_str() {
                     "volume"|"network"|"environment" => {

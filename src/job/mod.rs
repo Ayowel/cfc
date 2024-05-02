@@ -41,13 +41,13 @@ fn schedule_to_cron(sched: &str) -> Result<Cron, Error> {
 }
 
 /// Sleep until the next occurence of the provided cron
-async fn cron_sleep(cron: &Cron) -> Result<Option<bool>, Error> {
+async fn cron_sleep(cron: &Cron) -> Result<ExecInfo, Error> {
     let current_time = chrono::Local::now();
     let next_occurence = cron.find_next_occurrence(&current_time, false).unwrap();
     let sleep = (next_occurence - current_time).num_milliseconds();
     assert!(sleep >= 0);
     tokio::time::sleep(Duration::from_millis(sleep as u64)).await;
-    Ok(Some(true))
+    Ok(ExecInfo::Schedule(ExecutionSchedule{}))
 }
 
 /// A job's information container that allows to start the corresponding cron.
@@ -108,6 +108,10 @@ macro_rules! match_all_jobs {
     };
 }
 pub use match_all_jobs;
+
+use crate::job::common::ExecutionSchedule;
+
+use self::common::ExecInfo;
 
 impl TryFrom<HashMap<String, Vec<String>>> for JobInfo {
     type Error = Error;
@@ -216,7 +220,7 @@ impl JobInfo {
         set.spawn(async move {cron_sleep(&initial_cron).await});
         while let Some(res) = set.join_next().await {
             match res {
-                Ok(Ok(Some(_))) => {
+                Ok(Ok(ExecInfo::Schedule(_))) => {
                     // Return from timer
                     if may_run_parallel || set.is_empty() {
                         let handle_copy = handle.clone();
@@ -235,8 +239,8 @@ impl JobInfo {
                     let cron = cron.clone();
                     set.spawn(async move {cron_sleep(&cron).await});
                 },
-                Ok(Ok(None)) => {
-                    info!("Job ended successfully: {}", self.name());
+                Ok(Ok(ExecInfo::Report(r))) => {
+                    info!("Job ended successfully: {} - {:?}", self.name(), r);
                 },
                 Ok(Err(e)) => {
                     error!("An error occured while running job {}: {}", self.name(), e);

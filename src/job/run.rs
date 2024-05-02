@@ -6,6 +6,8 @@ use croner::Cron;
 
 use crate::job::common::UNKNOWN_CONTAINER_LABEL;
 
+use super::common::ExecInfo;
+
 #[derive(Clone)]
 pub struct RunJobInfo {
     pub name: String,
@@ -24,7 +26,7 @@ pub struct RunJobInfo {
 
 impl RunJobInfo {
     pub const LABEL: &'static str = "job-run";
-    pub async fn exec(self, _handle: &Docker) -> Result<Option<bool>, Error> {
+    pub async fn exec(self, _handle: &Docker) -> Result<ExecInfo, Error> {
         Err(Error::msg("message")) // TODO
     }
     pub fn get_schedule(&self) -> Cron {

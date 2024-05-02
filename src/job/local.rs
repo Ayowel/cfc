@@ -5,6 +5,8 @@ use bollard::Docker;
 use croner::Cron;
 use tracing::{event, Level};
 
+use super::common::{ExecInfo, ExecutionReport};
+
 #[derive(Clone)]
 pub struct LocalJobInfo {
     pub name: String,
@@ -16,7 +18,7 @@ pub struct LocalJobInfo {
 
 impl LocalJobInfo {
     pub const LABEL: &'static str = "job-local";
-    pub async fn exec(self, _: &Docker) -> Result<Option<bool>, Error> {
+    pub async fn exec(self, _: &Docker) -> Result<ExecInfo, Error> {
         let mut command = tokio::process::Command::new(self.command);
         for e in self.environment {
             let mut env_info = e.split("=");
@@ -57,7 +59,9 @@ impl LocalJobInfo {
                         String::from_utf8(o.stderr).unwrap_or_else(|_| "FAILED_TO_PARSE_OUTPUT".to_string()),
                     );
                 }
-                Ok(None)
+                let mut report = ExecutionReport::default();
+                report.retval = o.status.code().unwrap().into();
+                Ok(ExecInfo::Report(report))
             })
             .map_err(|e| Error::new(e))
     }

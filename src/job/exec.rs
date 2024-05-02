@@ -1,10 +1,21 @@
 use std::fmt::{Debug, Display, Formatter};
 
 use anyhow::Error;
-use bollard::{exec::{CreateExecOptions, StartExecOptions, StartExecResults}, Docker};
+use bollard::{exec::{CreateExecOptions, StartExecOptions, StartExecResults}, secret::ExecInspectResponse, Docker};
 use croner::Cron;
-use futures_util::TryStreamExt;
 use tracing::debug;
+
+use crate::job::common::{ExecInfo, ExecutionReport};
+
+impl ExecutionReport {
+    pub fn ingest_exec_inspect(&mut self, result: &ExecInspectResponse) -> Result<(), Error> {
+        if result.running.unwrap() {
+            return Err(Error::msg("Called Exec Inspect ingest before the command's termination"));
+        }
+        self.retval = result.exit_code.unwrap();
+        Ok(())
+    }
+}
 
 /// Execute an arbitrary command on a container.
 /// This is normally instanciated as the value of the enum obtained by calling
@@ -52,7 +63,7 @@ pub struct ExecJobInfo {
 
 impl ExecJobInfo {
     pub const LABEL: &'static str = "job-exec";
-    pub async fn exec(self, handle: &Docker) -> Result<Option<bool>, Error> {
+    pub async fn exec(self, handle: &Docker) -> Result<ExecInfo, Error> {
         debug!("Executing job '{}' on container {} ({})", self.name, self.container, self.command);
         let opts = CreateExecOptions {
             tty: Some(self.tty),
@@ -83,22 +94,18 @@ impl ExecJobInfo {
             },
             Err(e) => { return Err(e.into()); },
         };
-        let l: Vec<_> = ostream.try_collect().await.map_err(|e| Error::new(e))?;
-        let mut stdout = String::new();
-        let mut stderr = String::new();
-        for stream in l {
-            match stream {
-                bollard::container::LogOutput::StdErr { message } => stderr += &String::from_utf8(message.into()).map_err(|e| Error::new(e))?,
-                bollard::container::LogOutput::StdOut { message } => stdout += &String::from_utf8(message.into()).map_err(|e| Error::new(e))?,
-                bollard::container::LogOutput::StdIn { message: _ } => {},
-                bollard::container::LogOutput::Console { message } => stdout += &String::from_utf8(message.into()).map_err(|e| Error::new(e))?,
-            }
+        let mut report = ExecutionReport::default();
+        if let Err(e) = report.exhaust_stream(ostream).await {
+            return Err(e.into());
         }
         match handle.inspect_exec(&create_result.id).await {
-            Ok(i) => debug!("Exec finished with result {:?}, stdin [{}], stdout [{}]", i, stdout, stderr),
+            Ok(i) => {
+                report.ingest_exec_inspect(&i)?;
+                debug!("Exec finished with result {:?}", i);
+            },
             Err(e) => return Err(e.into()),
         }
-        Ok(None)
+        Ok(ExecInfo::Report(report))
     }
     pub fn get_schedule(&self) -> Cron {
         self.schedule.clone()

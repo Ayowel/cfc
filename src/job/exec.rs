@@ -70,7 +70,7 @@ impl ExecJobInfo {
             attach_stdin: Some(true),
             attach_stderr: Some(true),
             env: Some(self.environment),
-            cmd: Some(vec![self.command]),
+            cmd: Some(shell_words::split(self.command.as_ref()).unwrap()),
             user: self.user,
             ..Default::default()
         };

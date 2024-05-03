@@ -67,7 +67,7 @@ impl ExecJobInfo {
         debug!("Executing job '{}' on container {} ({})", self.name, self.container, self.command);
         let opts = CreateExecOptions {
             tty: Some(self.tty),
-            attach_stdin: Some(true),
+            attach_stdout: Some(true),
             attach_stderr: Some(true),
             env: Some(self.environment),
             cmd: Some(shell_words::split(self.command.as_ref()).unwrap()),

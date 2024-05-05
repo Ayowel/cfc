@@ -1,11 +1,13 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::{collections::HashMap, fmt::{Debug, Display, Formatter}};
 
 use anyhow::Error;
 use bollard::{exec::{CreateExecOptions, StartExecOptions, StartExecResults}, secret::ExecInspectResponse, Docker};
 use croner::Cron;
-use tracing::debug;
+use tracing::{debug, warn};
 
-use crate::job::common::{ExecInfo, ExecutionReport};
+use crate::{job::common::{ExecInfo, ExecutionReport}, require_one, take_one};
+
+use super::common::schedule_to_cron;
 
 impl ExecutionReport {
     pub fn ingest_exec_inspect(&mut self, result: &ExecInspectResponse) -> Result<(), Error> {
@@ -32,15 +34,14 @@ impl ExecutionReport {
 /// 
 /// #[tokio::main(flavor = "current_thread")]
 /// async fn main() {
+///     let handle = bollard::Docker::connect_with_local_defaults().unwrap();
 ///     let mut job = ExecJobInfo::default();
 ///     // The job's name, command, and container should be 
-///     job.name = "Demo job".to_string();
-///     job.command = "echo 3".to_string();
-///     job.container = "democontainer".to_string();
+///     job.name = "Demo job".into();
+///     job.command = "echo 3".into();
+///     job.container = "democontainer".into();
 /// 
-///     if let Ok(Some(_)) = job.exec().await {
-///         println!("Success!");
-///     }
+///     job.exec(&handle).await.ok();
 /// }
 /// ```
 #[derive(Clone)]
@@ -61,8 +62,29 @@ pub struct ExecJobInfo {
     pub environment: Vec<String>,
 }
 
+impl TryFrom<HashMap<String, Vec<String>>> for ExecJobInfo {
+    type Error = Error;
+
+    fn try_from(mut value: HashMap<String, Vec<String>>) -> Result<Self, Self::Error> {
+        let job = ExecJobInfo {
+            name: require_one!(value, "name").unwrap_or_else(|_| "".to_string()),
+            schedule: schedule_to_cron(&require_one!(value, "schedule")?.as_str())?,
+            command: require_one!(value, "command")?,
+            container: require_one!(value, "container")?,
+            user: take_one!(value, "user")?,
+            tty: take_one!(value, "tty")?.map_or(Ok(false), |t| t.parse().map_err(|e| Error::new(e)))?,
+            environment: value.remove("environment").unwrap_or(Default::default()),
+        };
+        if !value.is_empty() {
+            warn!("The job key map has excess attributes that will not be used: {:?}", value.keys());
+        }
+        Ok(job)
+    }
+}
+
 impl ExecJobInfo {
     pub const LABEL: &'static str = "job-exec";
+
     pub async fn exec(self, handle: &Docker) -> Result<ExecInfo, Error> {
         debug!("Executing job '{}' on container {} ({})", self.name, self.container, self.command);
         let opts = CreateExecOptions {

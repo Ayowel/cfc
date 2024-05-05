@@ -2,9 +2,8 @@
 use anyhow::Error;
 use bollard::Docker;
 use croner::Cron;
-use regex::Regex;
 use tokio::{task::JoinSet, time};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use std::{collections::HashMap, fmt::Debug, time::Duration};
 
 mod common;
@@ -13,32 +12,15 @@ mod run;
 mod local;
 mod servicerun;
 
+pub use common::ExecutionReport;
 pub use exec::ExecJobInfo;
 pub use run::RunJobInfo;
 pub use local::LocalJobInfo;
 pub use servicerun::ServiceRunJobInfo;
 
-/// Parse a user-provided string to generate the corresponding cronjob
-fn schedule_to_cron(sched: &str) -> Result<Cron, Error> {
-    // TODO: support multi-keys '@every' (e.g.: 1h30m)
-    let mut sched = sched.trim().to_string();
-    let re = Regex::new("^@every\\s+(?<interval>[0-9]+)(?<unit>s|m|h)$").unwrap();
-    match re.captures(sched.as_str()) {
-        Some(c) => {
-            let interval: i32 = c.name("interval").unwrap().as_str().parse().unwrap();
-            let unit = c.name("unit").unwrap().as_str();
-            match unit {
-                // TODO: add randomization of 0 values
-                "s" => sched = format!("*/{} * * * * *", interval).to_string(),
-                "m" => sched = format!("0 */{} * * * *", interval).to_string(),
-                "h" => sched = format!("0 0 */{} * * *", interval).to_string(),
-                _ => unreachable!("Encountered an unhandled time unit while parsing a schedule"),
-            }
-        },
-        None => {},
-    }
-    Cron::new(&sched).with_seconds_optional().parse().map_err(|e| Error::new(e))
-}
+use crate::job::common::ExecutionSchedule;
+
+pub use self::common::ExecInfo;
 
 /// Sleep until the next occurence of the provided cron
 async fn cron_sleep(cron: &Cron) -> Result<ExecInfo, Error> {
@@ -107,101 +89,40 @@ macro_rules! match_all_jobs {
         }
     };
 }
+
 pub use match_all_jobs;
-
-use crate::job::common::ExecutionSchedule;
-
-use self::common::ExecInfo;
 
 impl TryFrom<HashMap<String, Vec<String>>> for JobInfo {
     type Error = Error;
 
     fn try_from(mut parameters: HashMap<String, Vec<String>>) -> Result<Self, Self::Error> {
         let kind = parameters.remove("kind");
-        let command = parameters.remove("command");
-        let schedule = parameters.remove("schedule");
         if kind == None {
-            return Err(Error::msg(format!["The job has no job type"]));
+            return Err(Error::msg(format!["The job has no job kind"]));
         }
         if kind.as_ref().unwrap().len() != 1 {
             debug!["The job has several kinds set, using the last configured one"];
         }
-        if command == None {
-            return Err(Error::msg(format!["The job has no command"]));
-        }
-        if schedule == None {
-            return Err(Error::msg(format!["The job has no schedule"]));
-        }
-        let schedule = schedule.unwrap().pop().unwrap();
         let kind = kind.unwrap().pop().unwrap();
         let job_info: JobInfo;
         match kind.as_str() {
             ExecJobInfo::LABEL => {
-                let container;
-                match parameters.remove("container").map(|mut c| c.pop().unwrap()) {
-                    Some(c) => container = c,
-                    None => return Err(Error::msg("Missing 'container' attribute")),
-                };
-                let job = ExecJobInfo {
-                    name: parameters.remove("name").map_or_else(|| "".to_string(), |mut n| n.pop().unwrap()),
-                    schedule: schedule_to_cron(&schedule.as_str()).unwrap(),
-                    command: command.unwrap().pop().unwrap(),
-                    container,
-                    user: parameters.remove("user").map(|mut u| u.pop().unwrap()),
-                    tty: parameters.remove("tty").map_or(false, |mut t| t.pop().unwrap().parse().unwrap()),
-                    environment: parameters.remove("environment").unwrap_or(Default::default()),
-                };
+                let job = ExecJobInfo::try_from(parameters)?;
                 job_info = JobInfo::ExecJob(Box::new(job));
             },
             RunJobInfo::LABEL => {
-                let job = RunJobInfo {
-                    name: parameters.remove("name").map_or_else(|| "".to_string(), |mut n| n.pop().unwrap()),
-                    schedule: schedule_to_cron(&schedule.as_str()).unwrap(),
-                    command: command.unwrap().pop().unwrap(),
-                    image: parameters.remove("image").map(|mut c| c.pop().unwrap()),
-                    user: parameters.remove("user").map_or(None, |mut u| Some(u.pop().unwrap())),
-                    network: parameters.remove("network"),
-                    hostname: parameters.remove("hostname").map_or(None, |mut u| Some(u.pop().unwrap())),
-                    delete: parameters.remove("delete").map_or(true, |mut t| t.pop().unwrap().parse().unwrap()),
-                    container: parameters.remove("container").map(|mut c| c.pop().unwrap()),
-                    tty: parameters.remove("tty").map_or(false, |mut t| t.pop().unwrap().parse().unwrap()),
-                    volume: parameters.remove("volume").unwrap_or_else(|| Default::default()),
-                    environment: parameters.remove("environment").unwrap_or(Default::default()),
-                };
-                if job.image == None && job.container == None {
-                    return Err(Error::msg(format!["The job {} has neither an image nor a container parameter. At least one of thse must be set.", job.name]));
-                }
+                let job = RunJobInfo::try_from(parameters)?;
                 job_info = JobInfo::RunJob(Box::new(job));
             },
             LocalJobInfo::LABEL => {
-                let job = LocalJobInfo {
-                    name: parameters.remove("name").map_or_else(|| "".to_string(), |mut n| n.pop().unwrap()),
-                    schedule: schedule_to_cron(&schedule.as_str()).unwrap(),
-                    command: command.unwrap().pop().unwrap(),
-                    dir: parameters.remove("dir").map(|mut d| d.pop().unwrap()),
-                    environment: parameters.remove("environment").unwrap_or(Default::default()),
-                };
+                let job = LocalJobInfo::try_from(parameters)?;
                 job_info = JobInfo::LocalJob(Box::new(job));
             },
             ServiceRunJobInfo::LABEL => {
-                let job = ServiceRunJobInfo {
-                    name: parameters.remove("name").map_or_else(|| "".to_string(), |mut n| n.pop().unwrap()),
-                    schedule: schedule_to_cron(&schedule.as_str()).unwrap(),
-                    command: command.unwrap().pop().unwrap(),
-                    image: parameters.remove("image").map(|mut c| c.pop().unwrap()),
-                    user: parameters.remove("user").map_or(None, |mut u| Some(u.pop().unwrap())),
-                    network: parameters.remove("network"),
-                    delete: parameters.remove("delete").map_or(true, |mut t| t.pop().unwrap().parse().unwrap()),
-                    container: parameters.remove("container").map(|mut c| c.pop().unwrap()),
-                    tty: parameters.remove("tty").map_or(false, |mut t| t.pop().unwrap().parse().unwrap()),
-                };
+                let job = ServiceRunJobInfo::try_from(parameters)?;
                 job_info = JobInfo::ServiceRunJob(Box::new(job));
             }
             _ => return Err(Error::msg(format!["Unsupported job type {}", kind])),
-        }
-        if !parameters.is_empty() {
-            let k: Vec<&String> = parameters.keys().collect();
-            warn!["There are unused keys in the job. Unaffected values: {:?}", k];
         }
         Ok(job_info)
     }

@@ -1,11 +1,13 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::{collections::HashMap, fmt::{Debug, Display, Formatter}};
 
 use anyhow::Error;
 use bollard::Docker;
 use croner::Cron;
-use tracing::{event, Level};
+use tracing::{event, warn, Level};
 
-use super::common::{ExecInfo, ExecutionReport};
+use crate::{require_one, take_one};
+
+use super::common::{schedule_to_cron, ExecInfo, ExecutionReport};
 
 #[derive(Clone)]
 pub struct LocalJobInfo {
@@ -14,6 +16,24 @@ pub struct LocalJobInfo {
     pub command: String,
     pub dir: Option<String>,
     pub environment: Vec<String>,
+}
+
+impl TryFrom<HashMap<String, Vec<String>>> for LocalJobInfo {
+    type Error = Error;
+
+    fn try_from(mut value: HashMap<String, Vec<String>>) -> Result<Self, Self::Error> {
+        let job = LocalJobInfo {
+            name: require_one!(value, "name").unwrap_or_else(|_| "".to_string()),
+            schedule: schedule_to_cron(&require_one!(value, "schedule")?.as_str())?,
+            command: require_one!(value, "command")?,
+            dir: take_one!(value, "dir")?,
+            environment: value.remove("environment").unwrap_or(Default::default()),
+        };
+        if !value.is_empty() {
+            warn!("The job key map has excess attributes that will not be used: {:?}", value.keys());
+        }
+        Ok(job)
+    }
 }
 
 impl LocalJobInfo {

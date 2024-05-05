@@ -1,12 +1,13 @@
-use std::fmt::{Debug, Display, Formatter};
+use std::{collections::HashMap, fmt::{Debug, Display, Formatter}};
 
 use anyhow::Error;
 use bollard::Docker;
 use croner::Cron;
+use tracing::warn;
 
-use crate::job::common::UNKNOWN_CONTAINER_LABEL;
+use crate::{job::common::UNKNOWN_CONTAINER_LABEL, require_one, take_one};
 
-use super::common::ExecInfo;
+use super::common::{schedule_to_cron, ExecInfo};
 
 #[derive(Clone)]
 pub struct RunJobInfo {
@@ -22,6 +23,31 @@ pub struct RunJobInfo {
     pub tty: bool,
     pub volume: Vec<String>,
     pub environment: Vec<String>,
+}
+
+impl TryFrom<HashMap<String, Vec<String>>> for RunJobInfo {
+    type Error = Error;
+
+    fn try_from(mut value: HashMap<String, Vec<String>>) -> Result<Self, Self::Error> {
+        let job = RunJobInfo {
+            name: require_one!(value, "name").unwrap_or_else(|_| "".to_string()),
+            schedule: schedule_to_cron(&require_one!(value, "schedule")?.as_str())?,
+            command: require_one!(value, "command")?,
+            image: take_one!(value, "image")?,
+            user: take_one!(value, "user")?,
+            network: value.remove("network"),
+            hostname: take_one!(value, "hostname")?,
+            delete: take_one!(value, "delete")?.map_or(Ok(true), |t| t.parse().map_err(|e| Error::new(e)))?,
+            container: take_one!(value, "container")?,
+            tty: take_one!(value, "tty")?.map_or(Ok(false), |t| t.parse().map_err(|e| Error::new(e)))?,
+            volume: value.remove("volume").unwrap_or_else(|| Default::default()),
+            environment: value.remove("environment").unwrap_or(Default::default()),
+        };
+        if !value.is_empty() {
+            warn!("The job key map has excess attributes that will not be used: {:?}", value.keys());
+        }
+        Ok(job)
+    }
 }
 
 impl RunJobInfo {

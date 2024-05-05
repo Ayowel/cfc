@@ -176,3 +176,42 @@ impl Debug for ExecJobInfo {
             .finish()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use super::ExecJobInfo;
+
+    #[test]
+    fn create_exec_job_instance() {
+        let job = ExecJobInfo::try_from(HashMap::from([
+            ("name".into(), vec!["test_job".into()]),
+            ("container".into(), vec!["test_container".into()]),
+            ("schedule".into(), vec!["@hourly".into()]),
+            ("command".into(), vec!["echo".into()]),
+        ]));
+        assert!(job.is_ok());
+    }
+
+    #[test]
+    fn create_exec_job_instance_bad_schedule() {
+        let job = ExecJobInfo::try_from(HashMap::from([
+            ("name".into(), vec!["test_job".into()]),
+            ("container".into(), vec!["test_container".into()]),
+            ("schedule".into(), vec!["@testy".into()]),
+            ("command".into(), vec!["echo".into()]),
+        ]));
+        assert!(job.is_err());
+    }
+
+    #[test]
+    fn create_exec_job_instance_no_container() {
+        let job = ExecJobInfo::try_from(HashMap::from([
+            ("name".into(), vec!["test_job".into()]),
+            ("schedule".into(), vec!["@hourly".into()]),
+            ("command".into(), vec!["echo".into()]),
+        ]));
+        assert!(job.is_err());
+    }
+}

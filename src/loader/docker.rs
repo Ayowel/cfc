@@ -3,7 +3,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::{Error, Result};
 use bollard::{container::ListContainersOptions, Docker};
 use json::{self, JsonValue};
-use tracing::{event, Level};
+use tracing::{debug, error, trace, warn};
 
 use crate::job::LocalJobInfo;
 
@@ -12,7 +12,7 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
     let mut job_map: HashMap<String, HashMap<String, Vec<String>>> = HashMap::new();
     for prefix in label_prefixes {
         let label_filter = format!("{prefix}.enabled=true");
-        event![Level::DEBUG, "Looking for containers with label {label_filter}"];
+        debug!["Looking for containers with label {label_filter}"];
         let options = ListContainersOptions::<String> {
             filters: HashMap::from([("label".into(), vec![label_filter])]),
             ..Default::default()
@@ -21,33 +21,33 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
         match handle.list_containers(Some(options)).await {
             Ok(l) => container_list = l,
             Err(e) => {
-                event!(Level::ERROR, "Failed to get container list: {}", e);
+                error!("Failed to get container list: {}", e);
                 return Err(Error::msg("Failed to get container list"));
             }
         }
-        event!(Level::DEBUG, "Found {} candidate containers", container_list.len());
+        debug!("Found {} candidate containers", container_list.len());
         for container in container_list {
             let container_id = container.id.as_ref().unwrap();
             if container_idx.contains(container_id) {
-                event![Level::DEBUG, "Skipping {} as it was already encountered", container_id];
+                debug!["Skipping {} as it was already encountered", container_id];
                 continue;
             }
             container_idx.insert(container_id.to_string());
-            event!(Level::DEBUG, "On container {:?}", container);
+            debug!("On container {:?}", container);
             if !container.labels.as_ref().is_some_and(|c| !c.is_empty()) {
                 continue;
             }
             for (key, value) in container.labels.as_ref().unwrap() {
                 let mut key_parts = key.split(".");
                 if key_parts.next().map_or(true, |p| !label_prefixes.contains(&p.to_string())) {
-                    event![Level::TRACE, "Skipping label {} as it does not start with one of the expected prefix", key];
+                    trace!["Skipping label {} as it does not start with one of the expected prefix", key];
                     continue;
                 }
                 let job_kind = key_parts.next().and_then(|k| Some(k.to_string()));
                 let job_name = key_parts.next().and_then(|n| Some(n.to_string()));
                 let job_parameter = key_parts.next().and_then(|p| Some(p.to_string()));
                 if job_kind.is_none() || job_name.is_none() || job_parameter.is_none() || key_parts.next().is_some() {
-                    event![Level::TRACE, "Skipping label {} as its key does not contain the 4 expected parts", key];
+                    trace!["Skipping label {} as its key does not contain the 4 expected parts", key];
                     continue;
                 }
                 let job_kind = job_kind.unwrap();
@@ -56,7 +56,7 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
                 if !allow_unsafe_jobs {
                     match job_kind.as_str() {
                         LocalJobInfo::LABEL => {
-                            event![Level::ERROR, "Found local job declared in tags, however this is not allowed. Skipping label {}.", key];
+                            error!["Found local job declared in tags, however this is not allowed. Skipping label {}.", key];
                             continue;
                         },
                         _ => {},
@@ -76,7 +76,7 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
                 }
                 let evt_info = job_map.get_mut(&job_key).unwrap();
                 if !evt_info.get("kind").unwrap().contains(&job_kind) {
-                    event![Level::ERROR, "Found conflicting cron types for job {} (had '{}' but found '{}' in {})", job_name, evt_info.get("kind").unwrap().first().unwrap(), job_kind, key];
+                    error!["Found conflicting cron types for job {} (had '{}' but found '{}' in {})", job_name, evt_info.get("kind").unwrap().first().unwrap(), job_kind, key];
                     return Err(Error::msg("Conflicting cron types on label"));
                 }
                 // FIXME: this is only required due to the fact that we allow the use of multiple prefix keys
@@ -85,7 +85,7 @@ pub async fn get_tagged_targets(handle: &Docker, label_prefixes: &Vec<String>, a
                     if job_parameter == "container" && evt_info.get("container").map_or(true, |v| v.len() == 1 && v.contains(value)) {
                         evt_info.remove("container");
                     } else {
-                        event![Level::WARN, "Parameter is set more than once with different label prefixes (found on {})", key];
+                        warn!["Parameter is set more than once with different label prefixes (found on {})", key];
                         if !param_value.unwrap().contains(value) {
                             return Err(Error::msg("Parameter set more than once has different values in its occurences"));
                         }

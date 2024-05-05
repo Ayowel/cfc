@@ -3,7 +3,7 @@ use std::{collections::HashMap, fmt::{Debug, Display, Formatter}};
 use anyhow::Error;
 use bollard::Docker;
 use croner::Cron;
-use tracing::{event, warn, Level};
+use tracing::{debug, error, info, warn};
 
 use crate::{require_one, take_one};
 
@@ -56,8 +56,7 @@ impl LocalJobInfo {
             .and_then(|o| {
                 // TODO: move this to the caller and return an object enum to handle the distinction between timer and job
                 if o.status.code().and_then(|c| Some(c != 0)).unwrap_or(true) {
-                    event!(
-                        Level::ERROR,
+                    error!(
                         "Unexpected error code {} in local job '{}'. [{}] [{}]",
                         o.status.code().unwrap_or(10000),
                         self.name,
@@ -65,13 +64,8 @@ impl LocalJobInfo {
                         String::from_utf8(o.stderr).unwrap_or_else(|_| "FAILED_TO_PARSE_OUTPUT".to_string()),
                     );
                 } else {
-                    event!(
-                        Level::INFO,
-                        "Local job '{}' ended successfully.",
-                        self.name,
-                    );
-                    event!(
-                        Level::DEBUG,
+                    info!("Local job '{}' ended successfully.", self.name);
+                    debug!(
                         "Local job '{}' ended successfully ({}). [{}] [{}]",
                         self.name,
                         o.status.code().unwrap_or(10000),

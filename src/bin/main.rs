@@ -5,7 +5,7 @@ use std::process::exit;
 use cfc::{context::ApplicationContext, utils::is_docker_env, loader::{load_labels, load_file}};
 use clap::{ArgAction, Parser, Subcommand, Args};
 use tokio::{task::JoinSet, time::{sleep, Duration}};
-use tracing::{debug, error, event, info, instrument, trace, warn, Level};
+use tracing::{debug, error, info, instrument, trace, warn, Level};
 use tracing_subscriber;
 
 /// Arguments supported when running as a daemon
@@ -114,7 +114,7 @@ async fn main() {
                 _ => Level::TRACE,
             }
         ).init();
-    event!(Level::DEBUG, "{:?}", args);
+    debug!("{:?}", args);
 
     let global_context = args.get_context();
 
@@ -161,10 +161,10 @@ async fn main() {
         SubCommands::Validate(_) => {
             match load_file(&global_context.config_path, &global_context).await {
                 Ok(_) => {
-                    event![Level::INFO, "Successfully loaded configuration file"];
+                    info!["Successfully loaded configuration file"];
                 },
                 Err(e) => {
-                    event![Level::ERROR, "Failed to load the configuration file: {}", e];
+                    error!["Failed to load the configuration file: {}", e];
                     exit(1);
                 },
             }

@@ -1,6 +1,6 @@
 use anyhow::{Error, Result};
 use bollard::{Docker, API_DEFAULT_VERSION};
-use tracing::{event, Level};
+use tracing::error;
 
 pub struct ApplicationContext {
     pub label_prefixes: Vec<String>,
@@ -25,7 +25,7 @@ impl ApplicationContext {
             Some(path) => Docker::connect_with_socket(path, 120, API_DEFAULT_VERSION),
             None => Docker::connect_with_defaults(),
         }.map_err(|e| {
-            event!(Level::ERROR, "Failed to connect to Docker: {}", e);
+            error!("Failed to connect to Docker: {}", e);
             Error::new(e)
         })
     }

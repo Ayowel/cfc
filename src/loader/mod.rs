@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{Error, Result};
 use tokio::fs;
-use tracing::trace;
+use tracing::{debug, trace};
 
 use crate::{context::ApplicationContext, job::JobInfo};
 
@@ -17,6 +17,7 @@ pub mod yaml;
 fn map_to_job(map: HashMap<String, HashMap<String, Vec<String>>>) -> Result<Vec<JobInfo>> {
     let mut retval = vec![];
     for (name, mut parameters) in map{
+        debug!["Create new job '{}'", name];
         trace!["Create new job '{}' from {:?}", name, parameters];
         if !parameters.contains_key("name") {
             parameters.insert("name".to_string(), vec![name.clone()]);
